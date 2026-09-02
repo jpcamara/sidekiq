@@ -66,11 +66,25 @@ describe "SidekiqAdapter" do
     q = Sidekiq::Queue.new
 
     assert_equal 1, q.size
-    assert_equal 24, instance.provider_job_id.size
 
     job = q.first
+    # One push, one Sidekiq-generated JID: a retry re-pushes the same job_id
+    assert_match(/\A\h{24}\z/, job["jid"])
+    refute_equal instance.job_id, job["jid"]
+    assert_equal job["jid"], instance.provider_job_id
     assert_equal "Sidekiq::ActiveJob::Wrapper", job["class"]
     assert_equal "AjJob", job["wrapped"]
+    assert_equal "default", job["queue"]
+    # The payload is serialized before the provider id is assigned
+    assert_equal [instance.serialize.except("enqueued_at", "provider_job_id")], job["args"].map { |arg| arg.except("enqueued_at", "provider_job_id") }
+  end
+
+  it "enqueues a job scheduled for the past right away" do
+    instance = AjJob.set(wait_until: 1.minute.ago).perform_later(1)
+
+    assert_equal 0, Sidekiq::ScheduledSet.new.size
+    assert_equal 1, Sidekiq::Queue.new.size
+    assert_equal instance.provider_job_id, Sidekiq::Queue.new.first["jid"]
   end
 
   it "schedules a job" do
@@ -79,6 +93,8 @@ describe "SidekiqAdapter" do
     assert_equal 1, ss.size
 
     job = ss.find_job(instance.provider_job_id)
+    assert_match(/\A\h{24}\z/, job["jid"])
+    assert_in_delta 1.hour.from_now.to_f, job.at.to_f, 5
     assert_equal "default", job["queue"]
     assert_equal "Sidekiq::ActiveJob::Wrapper", job["class"]
     assert_equal "AjJob", job["wrapped"]

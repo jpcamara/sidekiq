@@ -61,22 +61,29 @@ begin
 
         # @api private
         def enqueue(job)
-          # NB: Active Job only serializes keys it recognizes. We
-          # cannot set arbitrary key/values here.
-          options = {wrapped: job.class, queue: job.queue_name}
-          options[:profile] = job.profile if job.respond_to?(:profile) && !job.profile.nil?
-
-          wrapper = Sidekiq::ActiveJob::Wrapper.set(options)
-          job.provider_job_id = wrapper.perform_async(job.serialize)
+          job.provider_job_id = Sidekiq::ActiveJob::Wrapper.client_push(wrapper_item(job))
         end
 
         # @api private
         def enqueue_at(job, timestamp)
-          options = {wrapped: job.class, queue: job.queue_name}
-          options[:profile] = job.profile if job.respond_to?(:profile) && !job.profile.nil?
-
-          job.provider_job_id = Sidekiq::ActiveJob::Wrapper.set(options).perform_at(timestamp, job.serialize)
+          item = wrapper_item(job)
+          at = timestamp.to_f
+          # As Setter#at does: something scheduled for now or the past is enqueued now
+          item["at"] = at if at > Time.now.to_f
+          job.provider_job_id = Sidekiq::ActiveJob::Wrapper.client_push(item)
         end
+
+        # The item Wrapper.set(options).perform_async(job.serialize) would push,
+        # built the way enqueue_all builds its push_bulk item: no Setter per
+        # enqueue, and the JID is drawn by normalize_item as for any push.
+        # NB: Active Job only serializes keys it recognizes. We cannot set
+        # arbitrary key/values here.
+        def wrapper_item(job)
+          item = {"class" => Sidekiq::ActiveJob::Wrapper, "wrapped" => job.class, "queue" => job.queue_name, "args" => [job.serialize]}
+          item["profile"] = job.profile if job.respond_to?(:profile) && !job.profile.nil?
+          item
+        end
+        private :wrapper_item
 
         # @api private
         def enqueue_all(jobs)
